@@ -52,29 +52,50 @@ def tokens_to_ix(
 
 class CharSeqDataloader():
     def __init__(self, filepath, seq_len, examples_per_epoch):
-        self.unique_chars = "" # fill in
-        self.vocab_size = "" # fill in
-        self.mappings = "" # fill in
-        self.seq_len = "" # fill in
+        with open(filepath, 'r', encoding='utf-8') as file:
+            self.data = list(file.read())
+
+        self.unique_chars = list(set(self.data))
+        self.vocab_size = len(self.unique_chars)
+        self.mappings = self.generate_char_mappings(self.unique_chars)
+        self.seq_len = seq_len
         self.examples_per_epoch = examples_per_epoch
 
         # your code here
     
     def generate_char_mappings(self, uq):
-        # your code here
-        pass
+        char_to_idx = {char: idx for idx, char in enumerate(self.unique_chars)}
+        idx_to_char = {idx: char for idx, char in enumerate(self.unique_chars)}
+        
+        return {'char_to_idx': char_to_idx, 'idx_to_char': idx_to_char}
 
     def convert_seq_to_indices(self, seq):
-        # your code here
-        pass
+
+        return [self.mappings['char_to_idx'][char] for char in seq if char in self.mappings['char_to_idx']]
 
     def convert_indices_to_seq(self, seq):
-        # your code here
-        pass
+        
+        return [self.mappings['idx_to_char'][index] for index in seq if index in self.mappings['idx_to_char']]
 
     def get_example(self):
-        # your code here
-        pass
+        data_indices = self.convert_seq_to_indices(self.data)
+
+        # Calculate the number of characters to loop through for the given number of examples per epoch
+        num_characters = len(data_indices) - self.seq_len
+
+        for _ in range(self.examples_per_epoch):
+            # Randomly choose a start index for the sequence
+            start_index = random.randint(0, num_characters - 1)
+            end_index = start_index + self.seq_len + 1
+
+            # Slice the sequence from the dataset
+            seq_slice = data_indices[start_index:end_index]
+            
+            # Prepare the input and target sequences
+            in_seq = torch.tensor(seq_slice[:-1], dtype=torch.int64).to(device)
+            target_seq = torch.tensor(seq_slice[1:], dtype=torch.int64).to(device)
+
+            yield in_seq, target_seq
 
 
 class CharRNN(nn.Module):
