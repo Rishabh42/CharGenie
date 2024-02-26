@@ -60,8 +60,6 @@ class CharSeqDataloader():
         self.mappings = self.generate_char_mappings(self.unique_chars)
         self.seq_len = seq_len
         self.examples_per_epoch = examples_per_epoch
-
-        # your code here
     
     def generate_char_mappings(self, uq):
         char_to_idx = {char: idx for idx, char in enumerate(self.unique_chars)}
@@ -106,27 +104,81 @@ class CharRNN(nn.Module):
 
         self.embedding_size = embedding_size
 
-        # your code here
+        # Define the embedding layer
+        self.embedding_layer = nn.Embedding(num_embeddings=n_chars, embedding_dim=embedding_size)
+        
+        # Define the linear layers for the RNN cell
+        # W_ax
+        self.wax = nn.Linear(in_features=embedding_size, out_features=hidden_size, bias=False)
+        # W_aa
+        self.waa = nn.Linear(in_features=hidden_size, out_features=hidden_size, bias=False)
+        # W_ya
+        self.wya = nn.Linear(in_features=hidden_size, out_features=n_chars, bias=False)
+        
+        # Define the bias terms for the hidden state and the output separately
+        # b_a
+        self.ba = nn.Parameter(torch.zeros(hidden_size))
+        # b_y
+        self.by = nn.Parameter(torch.zeros(n_chars))
         
     def rnn_cell(self, i, h):
-        # your code here
-        pass
+        h_next = torch.tanh(self.wax(i) + self.waa(h))
+
+        # Compute the output
+        o = self.wya(h_next)
+
+        return o, h_next
 
     def forward(self, input_seq, hidden = None):
-        # your code here
-        pass
+        if hidden is None:
+            hidden = torch.zeros(self.hidden_size).to(input_seq.device)
+        
+        # Embed the whole sequence at once
+        embedded = self.embedding_layer(input_seq)
+        
+        # List to store the outputs at each time step
+        outputs = []
+
+        # Process each time step in the input sequence
+        for i in range(input_seq.size(0)):
+            # Apply rnn_cell to the current input and the previous hidden state
+            out, hidden = self.rnn_cell(embedded[i], hidden)
+            outputs.append(out)
+        
+        # Stack the outputs into a single tensor
+        out = torch.stack(outputs, dim=0)
+        
+        # Return the final output sequence and the last hidden state
+        return out, hidden
 
     def get_loss_function(self):
-        # your code here
-        pass
+        return nn.CrossEntropyLoss()
 
     def get_optimizer(self, lr):
-        # your code here
-        pass
+        import torch.optim as optim
+        return optim.Adam(self.parameters(), lr=lr)
     
     def sample_sequence(self, starting_char, seq_len, temp=0.5, top_k=None, top_p=None):
-        # your code here
-        pass
+        gen_seq = [starting_char]
+        h = torch.zeros(1, self.hidden_size)
+
+        for _ in range(seq_len):
+            i = torch.tensor([[gen_seq[-1]]], dtype=torch.long)
+            
+            output, h = self.forward(i, h)
+
+            # Apply temperature scaling on the logits
+            o = output[-1] / temp  # Get the last output logits and apply temperature
+
+            # Apply softmax to get probabilities
+            probabs = F.softmax(o, dim=1).squeeze()
+
+            # Sampling from the distribution
+            samples = Categorical(probabs).sample().item()
+            
+            gen_seq.append(samples)
+
+        return gen_seq
 
 class CharLSTM(nn.Module):
     def __init__(self, n_chars, embedding_size, hidden_size):
@@ -158,12 +210,36 @@ class CharLSTM(nn.Module):
         pass
 
 def top_k_filtering(logits, top_k=40):
-    # your code here
-    pass
+    if top_k > 0:
+        # For each batch entry, leave the top k logits as they are and set the rest to negative infinity
+        top_k_values, _ = torch.topk(logits, k=top_k, dim=-1)
+        kth_best = top_k_values[:, -1].view(-1, 1)
+        mask = logits < kth_best
+        logits[mask] = float('-inf')
+    return logits
 
 def top_p_filtering(logits, top_p=0.9):
     # your code here
-    pass
+    probabilities = torch.softmax(logits, dim=-1)
+    
+    # Sort the probabilities to identify the top p
+    sorted_probabilities, sorted_indices = torch.sort(probabilities, descending=True, dim=-1)
+    
+    # Calculate the cumulative sum of the sorted probabilities
+    cumulative_probabilities = torch.cumsum(sorted_probabilities, dim=-1)
+    
+    remove_sorted_indices = cumulative_probabilities > top_p
+    # Shift the mask to the right to keep the first token above the threshold
+    remove_sorted_indices[..., 1:] = remove_sorted_indices[..., :-1].clone()
+    remove_sorted_indices[..., 0] = 0
+    
+    # Convert the sorted indices back to the original indices
+    remove_original_indices = remove_sorted_indices.scatter(dim=-1, index=sorted_indices, src=remove_sorted_indices)
+    
+    # Apply the mask to the logits, setting tokens to remove to negative infinity
+    logits[remove_original_indices] = float('-inf')
+    
+    return logits
 
 def train(model, dataset, lr, out_seq_len, num_epochs):
 
