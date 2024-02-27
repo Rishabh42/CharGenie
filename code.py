@@ -168,7 +168,7 @@ class CharRNN(nn.Module):
             output, h = self.forward(i, h)
 
             # Apply temperature scaling on the logits
-            o = output[-1] / temp  # Get the last output logits and apply temperature
+            o = output[-1] / temp
 
             # Apply softmax to get probabilities
             probabs = F.softmax(o, dim=1).squeeze()
@@ -187,27 +187,87 @@ class CharLSTM(nn.Module):
         self.embedding_size = embedding_size
         self.n_chars = n_chars
 
-        #  your code here
+        # Embedding layer
+        self.embedding_layer = nn.Embedding(num_embeddings=n_chars, embedding_dim=embedding_size)
+        
+        # LSTM Gates: input, forget, cell, output
+        self.forget_gate = nn.Linear(in_features=hidden_size + embedding_size, out_features=hidden_size)
+        self.input_gate = nn.Linear(in_features=hidden_size + embedding_size, out_features=hidden_size)
+        self.cell_gate = nn.Linear(in_features=hidden_size + embedding_size, out_features=hidden_size)
+        self.output_gate = nn.Linear(in_features=hidden_size + embedding_size, out_features=hidden_size)
+        
+        # LSTM Cell state
+        self.cell_state_layer = nn.Linear(in_features=hidden_size + embedding_size, out_features=hidden_size)
+        
+        # Output layer
+        self.fc_output = nn.Linear(in_features=hidden_size, out_features=n_chars)
 
     def forward(self, input_seq, hidden = None, cell = None):
         # your code here
-        pass
+        if hidden is None or cell is None:
+            hidden = torch.zeros(self.hidden_size, device=input_seq.device)
+            cell = torch.zeros(self.hidden_size, device=input_seq.device)
+
+        outputs = []
+
+        for i in range(input_seq.size(0)):
+            i_embedded = self.embedding_layer(input_seq[i])
+            #output=torch.zeros(self.hidden_size, device=input_seq.device)
+            output, hidden, cell = self.lstm_cell(i_embedded.squeeze(), hidden, cell)
+            outputs.append(output)
+
+        out_seq = torch.stack(outputs).squeeze(1)
+
+        return out_seq, hidden, cell
 
     def lstm_cell(self, i, h, c):
-        # your code here
-        pass
+        input = torch.cat((i, h), dim=0)
+
+        fg = torch.sigmoid(self.forget_gate(input))
+        ig = torch.sigmoid(self.input_gate(input))
+
+        ctl = torch.tanh(self.cell_state_layer(input))
+        c_new = fg * c + ig * ctl
+
+        og = torch.sigmoid(self.output_gate(input))
+        h_new = og * torch.tanh(c_new)
+        o = self.fc_output(h_new)
+
+        return o, h_new, c_new
 
     def get_loss_function(self):
-        # your code here
-        pass
+        return nn.CrossEntropyLoss()
 
     def get_optimizer(self, lr):
-        # your code here
-        pass
+        import torch.optim as optim
+        return optim.Adam(self.parameters(), lr=lr)
     
     def sample_sequence(self, starting_char, seq_len, temp=0.5, top_k=None, top_p=None):
-        # your code here
-        pass
+        starting_index = starting_char
+
+        outputs = [starting_index]
+        input_seq = torch.full((1, 1), starting_index, device=device)
+        hidden = None
+        cell = None
+
+        for index in range(seq_len):
+            output, hidden, cell = self.forward(input_seq, hidden, cell)
+
+            logits = output.squeeze(0) / temp
+
+            if top_k is not None:
+                logits = top_k_filtering(logits, top_k)
+            elif top_p is not None:
+                logits = top_p_filtering(logits, top_p)
+
+            proba = F.softmax(logits, dim=0)
+
+            next_char = Categorical(proba).sample().item()
+
+            outputs.append(next_char)
+            input_seq = torch.full((1, 1), next_char, device=device)
+
+        return outputs
 
 def top_k_filtering(logits, top_k=40):
     if top_k > 0:
@@ -306,14 +366,64 @@ def run_char_lstm():
 
 
 def fix_padding(batch_premises, batch_hypotheses):
-    pass # your code here
+    from torch.nn.utils.rnn import pad_sequence
+
+    batch_premises_padded = pad_sequence([torch.tensor(p) for p in batch_premises], batch_first=True)
+    batch_hypotheses_padded = pad_sequence([torch.tensor(h) for h in batch_hypotheses], batch_first=True)
+    
+    batch_premises_reversed = pad_sequence([torch.tensor(p[::-1]) for p in batch_premises], batch_first=True)
+    batch_hypotheses_reversed = pad_sequence([torch.tensor(h[::-1]) for h in batch_hypotheses], batch_first=True)
+    
+    return batch_premises_padded, batch_hypotheses_padded, batch_premises_reversed, batch_hypotheses_reversed
 
 
 def create_embedding_matrix(word_index, emb_dict, emb_dim):
-    pass
+    import numpy as np
+
+    max_index = max(word_index.values())
+    embedding_matrix = np.zeros((max_index + 1, emb_dim))
+
+    for word, i in word_index.items():
+        embedding_vector = emb_dict.get(word)
+        if embedding_vector is not None:
+            embedding_matrix[i] = embedding_vector
+        else:
+            embedding_matrix[i] = np.random.normal(scale=0.6, size=(emb_dim, ))
+
+    return torch.from_numpy(embedding_matrix).float()
 
 def evaluate(model, dataloader, index_map):
-    pass
+    model.eval()
+    true_labels = []
+    predicted_labels = []
+    with torch.no_grad():
+        for batch in dataloader:
+            premise = batch['premise']
+            hypotheses = batch['hypothesis']
+            labels = batch['label']
+
+            premises_indices = []
+            hypothesis_indices = []
+
+            for words in premise:
+                indices = tokens_to_ix(tokenize(words), index_map)
+                premises_indices.append(indices)
+
+            for words in hypotheses:
+                indices = tokens_to_ix(tokenize(words), index_map)
+                hypothesis_indices.append(indices)
+
+            premises_indices = [[inner[0] for inner in outer if inner] for outer in premises_indices]
+            hypothesis_indices = [[inner[0] for inner in outer if inner] for outer in hypothesis_indices]
+
+            pred_output = model.forward(premises_indices, hypothesis_indices)
+
+            true_labels.extend(labels)
+            predicted_labels.extend(pred_output.argmax(dim=1).tolist())
+
+    num_correct = sum(1 for pred, true in zip(predicted_labels, true_labels) if pred == true)
+
+    return num_correct / len(true_labels)
 
 class UniLSTM(nn.Module):
     def __init__(self, vocab_size, hidden_dim, num_layers, num_classes):
@@ -323,10 +433,25 @@ class UniLSTM(nn.Module):
         self.vocab_size = vocab_size
         self.num_layers = num_layers
         
-        # your code here
+        self.lstm = nn.LSTM(input_size=hidden_dim, hidden_size=hidden_dim, num_layers=num_layers,
+                            batch_first=True, device=device)
+
+        self.int_layer = nn.Linear(2*hidden_dim, hidden_dim)
+        self.out_layer = nn.Linear(hidden_dim, num_classes)
+        self.embedding_layer = nn.Embedding(vocab_size, hidden_dim, padding_idx=0)
 
     def forward(self, a, b):
-        pass # your code here
+        batch_premises, batch_hypotheses, batch_premises_reversed, batch_hypotheses_reversed = fix_padding(a, b)
+        premise_embedding = self.embedding_layer(batch_premises)
+        hypothesis_embedding = self.embedding_layer(batch_hypotheses)
+
+        output_premise, (hidden_state_premise, cell_state_premise) = self.lstm(premise_embedding)
+        output_hypothesis, (hidden_state_hypothesis, cell_state_hypothesis) = self.lstm(hypothesis_embedding)
+
+        combined = torch.cat((cell_state_premise[-1], cell_state_hypothesis[-1]), dim=1)
+        output = self.out_layer(torch.relu(self.int_layer(combined)))
+
+        return output
 
 
 class ShallowBiLSTM(nn.Module):
@@ -337,27 +462,59 @@ class ShallowBiLSTM(nn.Module):
         self.vocab_size = vocab_size
         self.num_layers = num_layers
 
-        # your code here
+        self.lstm_forward = nn.LSTM(input_size=hidden_dim, hidden_size=hidden_dim, num_layers=num_layers, bias=True,
+                                    batch_first=True, device=device)
+        self.lstm_backward = nn.LSTM(input_size=hidden_dim, hidden_size=hidden_dim, num_layers=num_layers, bias=True,
+                                     batch_first=True, device=device)
+        self.int_layer = nn.Linear(4 * hidden_dim, hidden_dim)
+        self.out_layer = nn.Linear(hidden_dim, num_classes)
+        self.embedding_layer = nn.Embedding(vocab_size, hidden_dim, padding_idx=0)
 
     def forward(self, a, b):
-        pass # your code here
+        batch_premises, batch_hypotheses, batch_premises_reversed, batch_hypotheses_reversed = fix_padding(a, b)
+        premise_embedding = self.embedding_layer(batch_premises)
+        hypothesis_embedding = self.embedding_layer(batch_hypotheses)
+        premise_reversed_embedding = self.embedding_layer(batch_premises_reversed)
+        hypothesis_reversed_embedding = self.embedding_layer(batch_hypotheses_reversed)
+
+        output_premise, (hidden_state_premise, cell_state_premise) = self.lstm_forward(premise_embedding)
+        output_hypothesis, (hidden_state_hypothesis, cell_state_hypothesis) = self.lstm_forward(hypothesis_embedding)
+
+        output_premise_reversed, (hidden_state_premise_reversed, cell_state_premise_reversed) = self.lstm_backward(
+            premise_reversed_embedding)
+
+        output_hypothesis_reversed, (
+            hidden_state_hypothesis_reversed, cell_state_hypothesis_reversed) = self.lstm_backward(
+            hypothesis_reversed_embedding)
+
+        combined = torch.cat(
+            (cell_state_premise[-1], cell_state_premise_reversed[-1], cell_state_hypothesis[-1],
+             cell_state_hypothesis_reversed[-1]),
+            dim=1)
+        output = self.out_layer(torch.relu(self.int_layer(combined)))
+
+        return output
 
 def run_snli(model):
     dataset = load_dataset("snli")
     glove = pd.read_csv('./data/glove.6B.100d.txt', sep=" ", quoting=3, header=None, index_col=0)
 
-    glove_embeddings = "" # fill in your code
+    glove_embeddings = glove.to_numpy()
 
     train_filtered = dataset['train'].filter(lambda ex: ex['label'] != -1)
     valid_filtered = dataset['validation'].filter(lambda ex: ex['label'] != -1)
     test_filtered =  dataset['test'].filter(lambda ex: ex['label'] != -1)
 
     # code to make dataloaders
+    dataloader_train = DataLoader(train_filtered, batch_size=32, shuffle=True)
+    dataloader_valid = DataLoader(valid_filtered, batch_size=32, shuffle=True)
+    dataloader_test = DataLoader(test_filtered, batch_size=32, shuffle=True)
 
     word_counts = build_word_counts(dataloader_train)
     index_map = build_index_map(word_counts)
 
     # training code
+    embeddings_train = create_embedding_matrix(index_map, glove_embeddings, 100)
 
 def run_snli_lstm():
     model_class = "" # fill in the classs name of the model (to initialize within run_snli)
