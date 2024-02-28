@@ -187,19 +187,16 @@ class CharLSTM(nn.Module):
         self.embedding_size = embedding_size
         self.n_chars = n_chars
 
-        # Embedding layer
         self.embedding_layer = nn.Embedding(num_embeddings=n_chars, embedding_dim=embedding_size)
         
-        # LSTM Gates: input, forget, cell, output
         self.forget_gate = nn.Linear(in_features=hidden_size + embedding_size, out_features=hidden_size)
-        self.input_gate = nn.Linear(in_features=hidden_size + embedding_size, out_features=hidden_size)
         self.cell_gate = nn.Linear(in_features=hidden_size + embedding_size, out_features=hidden_size)
+
+        self.input_gate = nn.Linear(in_features=hidden_size + embedding_size, out_features=hidden_size)
         self.output_gate = nn.Linear(in_features=hidden_size + embedding_size, out_features=hidden_size)
         
-        # LSTM Cell state
         self.cell_state_layer = nn.Linear(in_features=hidden_size + embedding_size, out_features=hidden_size)
         
-        # Output layer
         self.fc_output = nn.Linear(in_features=hidden_size, out_features=n_chars)
 
     def forward(self, input_seq, hidden = None, cell = None):
@@ -212,7 +209,6 @@ class CharLSTM(nn.Module):
 
         for i in range(input_seq.size(0)):
             i_embedded = self.embedding_layer(input_seq[i])
-            #output=torch.zeros(self.hidden_size, device=input_seq.device)
             output, hidden, cell = self.lstm_cell(i_embedded.squeeze(), hidden, cell)
             outputs.append(output)
 
@@ -223,14 +219,16 @@ class CharLSTM(nn.Module):
     def lstm_cell(self, i, h, c):
         input = torch.cat((i, h), dim=0)
 
-        fg = torch.sigmoid(self.forget_gate(input))
-        ig = torch.sigmoid(self.input_gate(input))
+        forget_g = torch.sigmoid(self.forget_gate(input))
+        
+        input_g = torch.sigmoid(self.input_gate(input))
 
-        ctl = torch.tanh(self.cell_state_layer(input))
-        c_new = fg * c + ig * ctl
+        ct_layer = torch.tanh(self.cell_state_layer(input))
 
-        og = torch.sigmoid(self.output_gate(input))
-        h_new = og * torch.tanh(c_new)
+        c_new = forget_g * c + input_g * ct_layer
+
+        out_g = torch.sigmoid(self.output_gate(input))
+        h_new = out_g * torch.tanh(c_new)
         o = self.fc_output(h_new)
 
         return o, h_new, c_new
