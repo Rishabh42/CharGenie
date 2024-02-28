@@ -203,13 +203,15 @@ class CharLSTM(nn.Module):
         # your code here
         if hidden is None or cell is None:
             hidden = torch.zeros(self.hidden_size, device=input_seq.device)
+
             cell = torch.zeros(self.hidden_size, device=input_seq.device)
 
         outputs = []
 
         for i in range(input_seq.size(0)):
-            i_embedded = self.embedding_layer(input_seq[i])
-            output, hidden, cell = self.lstm_cell(i_embedded.squeeze(), hidden, cell)
+            i_embed = self.embedding_layer(input_seq[i])
+
+            output, hidden, cell = self.lstm_cell(i_embed.squeeze(), hidden, cell)
             outputs.append(output)
 
         out_seq = torch.stack(outputs).squeeze(1)
@@ -220,11 +222,9 @@ class CharLSTM(nn.Module):
         input = torch.cat((i, h), dim=0)
 
         forget_g = torch.sigmoid(self.forget_gate(input))
-        
         input_g = torch.sigmoid(self.input_gate(input))
 
         ct_layer = torch.tanh(self.cell_state_layer(input))
-
         c_new = forget_g * c + input_g * ct_layer
 
         out_g = torch.sigmoid(self.output_gate(input))
@@ -241,16 +241,15 @@ class CharLSTM(nn.Module):
         return optim.Adam(self.parameters(), lr=lr)
     
     def sample_sequence(self, starting_char, seq_len, temp=0.5, top_k=None, top_p=None):
-        starting_index = starting_char
+        start_i = starting_char
 
-        outputs = [starting_index]
-        input_seq = torch.full((1, 1), starting_index, device=device)
+        outputs = [start_i]
+        input_seq = torch.full((1, 1), start_i, device=device)
         hidden = None
         cell = None
 
         for index in range(seq_len):
             output, hidden, cell = self.forward(input_seq, hidden, cell)
-
             logits = output.squeeze(0) / temp
 
             if top_k is not None:
@@ -258,11 +257,12 @@ class CharLSTM(nn.Module):
             elif top_p is not None:
                 logits = top_p_filtering(logits, top_p)
 
-            proba = F.softmax(logits, dim=0)
+            probabs = F.softmax(logits, dim=0)
 
-            next_char = Categorical(proba).sample().item()
+            next_char = Categorical(probabs).sample().item()
 
             outputs.append(next_char)
+
             input_seq = torch.full((1, 1), next_char, device=device)
 
         return outputs
@@ -280,43 +280,27 @@ def top_p_filtering(logits, top_p=0.9):
     # your code here
     probabilities = torch.softmax(logits, dim=-1)
     
-    # Sort the probabilities to identify the top p
     sorted_probabilities, sorted_indices = torch.sort(probabilities, descending=True, dim=-1)
-    
-    # Calculate the cumulative sum of the sorted probabilities
     cumulative_probabilities = torch.cumsum(sorted_probabilities, dim=-1)
-    
     remove_sorted_indices = cumulative_probabilities > top_p
-    # Shift the mask to the right to keep the first token above the threshold
+
     remove_sorted_indices[..., 1:] = remove_sorted_indices[..., :-1].clone()
     remove_sorted_indices[..., 0] = 0
     
-    # Convert the sorted indices back to the original indices
-    remove_original_indices = remove_sorted_indices.scatter(dim=-1, index=sorted_indices, src=remove_sorted_indices)
-    
-    # Apply the mask to the logits, setting tokens to remove to negative infinity
+    remove_original_indices = remove_sorted_indices.scatter(dim=-1, index=sorted_indices, src=remove_sorted_indices)  
     logits[remove_original_indices] = float('-inf')
     
     return logits
 
 def train(model, dataset, lr, out_seq_len, num_epochs):
-
-    # code to initialize optimizer, loss function
-
     n = 0
     running_loss = 0
     for epoch in range(num_epochs):
         for in_seq, out_seq in dataset.get_example():
-            # main loop code
-
             n += 1
 
-        # print info every X examples
         print(f"Epoch {epoch}. Running loss so far: {(running_loss/n):.8f}")
-
         print("\n-------------SAMPLE FROM MODEL-------------")
-
-        # code to sample a sequence from your model randomly
 
         with torch.no_grad():
             pass
@@ -326,7 +310,6 @@ def train(model, dataset, lr, out_seq_len, num_epochs):
         n = 0
         running_loss = 0
 
-    
     return None # return model optionally
 
 
@@ -336,7 +319,7 @@ def run_char_rnn():
     seq_len = 100
     lr = 0.002
     num_epochs = 100
-    epoch_size = 10 # one epoch is this # of examples
+    epoch_size = 10
     out_seq_len = 200
     data_path = "./data/shakespeare.txt"
 
@@ -392,36 +375,37 @@ def create_embedding_matrix(word_index, emb_dict, emb_dim):
 
 def evaluate(model, dataloader, index_map):
     model.eval()
-    true_labels = []
-    predicted_labels = []
+    true_l = []
+    predicted_l = []
+
     with torch.no_grad():
         for batch in dataloader:
             premise = batch['premise']
             hypotheses = batch['hypothesis']
             labels = batch['label']
 
-            premises_indices = []
-            hypothesis_indices = []
+            premises_i = []
+            hypothesis_i = []
 
-            for words in premise:
-                indices = tokens_to_ix(tokenize(words), index_map)
-                premises_indices.append(indices)
+            for w in premise:
+                indices = tokens_to_ix(tokenize(w), index_map)
+                premises_i.append(indices)
 
-            for words in hypotheses:
-                indices = tokens_to_ix(tokenize(words), index_map)
-                hypothesis_indices.append(indices)
+            for w in hypotheses:
+                indices = tokens_to_ix(tokenize(w), index_map)
+                hypothesis_i.append(indices)
 
-            premises_indices = [[inner[0] for inner in outer if inner] for outer in premises_indices]
-            hypothesis_indices = [[inner[0] for inner in outer if inner] for outer in hypothesis_indices]
+            premises_i = [[inner[0] for inner in outer if inner] for outer in premises_i]
+            hypothesis_i = [[inner[0] for inner in outer if inner] for outer in hypothesis_i]
 
-            pred_output = model.forward(premises_indices, hypothesis_indices)
+            pred_output = model.forward(premises_i, hypothesis_i)
 
-            true_labels.extend(labels)
-            predicted_labels.extend(pred_output.argmax(dim=1).tolist())
+            true_l.extend(labels)
+            predicted_l.extend(pred_output.argmax(dim=1).tolist())
 
-    num_correct = sum(1 for pred, true in zip(predicted_labels, true_labels) if pred == true)
+    num_correct = sum(1 for pred, true in zip(predicted_l, true_l) if pred == true)
 
-    return num_correct / len(true_labels)
+    return num_correct / len(true_l)
 
 class UniLSTM(nn.Module):
     def __init__(self, vocab_size, hidden_dim, num_layers, num_classes):
